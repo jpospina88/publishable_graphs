@@ -1,0 +1,425 @@
+---
+title: "Publishable Graphs in R"
+author: "Juan Ospina"
+date: '2024-01-18'
+output: 
+  html_document: 
+    toc: yes
+    toc_float: yes
+    number_sections: yes
+editor_options: 
+  chunk_output_type: console
+---
+
+# First Part
+
+## Load packages
+
+```{r}
+# Run the line below to install any missing packages
+# install.packages("tidyverse")
+
+# Packages
+library(tidyverse) # to do almost everything in R. It's a package of packages. Includes dplyr, ggplot2, and many others
+library(magrittr) # to pipe and assign
+library(knitr) # to knit
+library(psych) # to get descriptive statistics
+library(psychTools) # to get the dataset that we'll use in the workshop
+library(emmeans) # to get estimated means from models
+library(jtools) # for summ(), replaces summary() for model stats
+library(interactions) # for interaction plots
+library(kableExtra) # to create HTML tables
+```
+
+## Get session info
+
+This is useful when you need to run old code and figure out which version of the packages you were using
+
+```{r}
+sessionInfo()
+```
+
+## Custom functions
+
+These functions simplify the code below
+
+```{r}
+# Format HTML Tables with Kable
+kable_format <- . %>% 
+  kable(format = "html") %>% 
+  kable_styling(bootstrap_options = c("hover", "responsive"), font_size = 12, full_width = F, html_font = "helvetica")
+
+# Get Percentages
+factor_pct <- function(data, factor){
+  data %>%
+    count(!!!factor) %>%
+    mutate(total = sum(n, na.rm = F),
+           pct = round(n/total*100, 1)) %>%
+    kable_format
+}
+
+# Get nice HTML table of descriptive statistics
+describe_format <- function(data){
+  data %>%
+    describe %>%
+    as.data.frame() %>%
+    rownames_to_column(var = "var_name") %>%
+    mutate_at(vars(-var_name), funs(round(., digits = 2))) %>%
+    kable_format
+}
+
+# Descriptive Statistics by Factors
+describe_factors_format <- function(data, factors, variables){
+  data %>% 
+    select(!!!variables) %>% 
+    describeBy(factors, mat = TRUE, digits = 2) %>%
+    kable_format
+}
+```
+
+
+## Load dataset
+
+Info about the dataset "affect" can be found here:
+
+https://rdrr.io/cran/psychTools/man/affect.html
+https://rdrr.io/cran/psychTools/man/msq.html
+
+```{r}
+# Get dataset. Note: need to install and load psychTools package
+ds <- force(affect)
+```
+
+## Get variables names
+
+```{r}
+ds %>% 
+  names() %>% 
+  noquote()
+```
+
+## Clean variables
+
+```{r}
+ds %<>% # %<>% = ds <- ds %>%. With " %<>%", we're both piping (%>%) and assigning (<-) at the same time
+  mutate(
+    Study_num = ifelse(Study == "maps", 0, 1),
+    
+    # Compute new factor variable from the numerical one
+    Study_f = factor(Study_num,
+                    levels = c(0, 1),
+                    labels = c("maps", "flat")),
+    Film_f = factor(Film,
+                    levels = c(1, 2, 3, 4),
+                    labels = c("Frontline", "Halloween", "Nat Geo", "Parenthood")),
+    Film_New = ifelse(Film == 1, 0,
+                      ifelse(Film == 2, 1, NA)),
+    Film_New_f = factor(Film_New,
+                    levels = c(0, 1),
+                    labels = c("Frontline", "Halloween")),
+    Film_Front = ifelse(Film == 1, 0, 1),
+    Film_Front_f = factor(Film_Front,
+                    levels = c(0, 1),
+                    labels = c("Frontline", "Other Movies")),
+    
+    # Rename variables to more intuitive names while keeping the original variables
+    extraver = ext,
+    neurot = neur,
+    EnergeticArousal2 = EA2,
+    TenseArousal2 = TA2,
+    PositiveAffect2 = PA2,
+    NegativeAffect2 = NA2,
+    
+    # Standardize variables
+    Zextraver = scale(extraver, center = TRUE, scale = TRUE),
+    Zextraver = as.numeric(Zextraver),
+    Zneurot = scale(neurot, center = TRUE, scale = TRUE),
+    Zneurot = as.numeric(Zneurot),
+    ZEnergeticArousal2 = scale(EnergeticArousal2, center = TRUE, scale = TRUE),
+    ZEnergeticArousal2 = as.numeric(ZEnergeticArousal2),
+    ZTenseArousal2 = scale(TenseArousal2, center = TRUE, scale = TRUE),
+    ZTenseArousal2 = as.numeric(ZTenseArousal2),
+    ZPositiveAffect2 = scale(PositiveAffect2, center = TRUE, scale = TRUE),
+    ZPositiveAffect2 = as.numeric(ZPositiveAffect2),
+    ZNegativeAffect2 = scale(NegativeAffect2, center = TRUE, scale = TRUE),
+    ZNegativeAffect2 = as.numeric(ZNegativeAffect2),
+  )
+
+# To double-check that factors were coded correctly
+factor_pct(ds, quos(Film, Film_f, Film_New, Film_New_f, Film_Front, Film_Front_f))
+factor_pct(ds, quos(Study, Study_num, Study_f))
+
+# Create list of continuous variables
+vars_cont <-
+  quos(
+    extraver, 
+    neurot, 
+    EnergeticArousal2,
+    TenseArousal2,
+    PositiveAffect2,
+    NegativeAffect2,
+    Zextraver, 
+    Zneurot, 
+    ZEnergeticArousal2,
+    ZTenseArousal2,
+    ZPositiveAffect2,
+    ZNegativeAffect2
+  )
+
+# Get descriptive statistics of continuous variables
+ds %>%
+  select(
+    !!!vars_cont) %>%
+  describe_format()
+
+# Get descriptive statistics of continuous variables by factors
+describe_factors_format(ds, list(ds$Film_f), vars_cont)
+describe_factors_format(ds, list(ds$Film_f, ds$Study_f), vars_cont)
+
+```
+
+# Second Part
+
+## Settings plots
+
+```{r}
+# remove anoying labels from the graph
+guides_no <- guides(color = FALSE, fill = FALSE)
+
+# black and white theme
+theme_overall <- theme_bw()
+
+# many more changes that you can make to the graphs
+theme_specifics <- 
+  theme(
+    strip.text = element_text(color = "White"), 
+    strip.background = element_rect(fill = "black", colour = "black", size = NULL, linetype = NULL, inherit.blank = FALSE), 
+    axis.text = # change y-axis font
+      element_text(colour = "black", size = 16, family = "Times New Roman"),
+    axis.text.x = # change size of x-axis font
+      element_text(colour = "black", size = 14, family = "Times New Roman"),
+    legend.title = # change legend title font
+      element_text(colour = "black", size = 16, family = "Times New Roman"),
+    legend.text = # change legend labels font
+      element_text(colour = "black", size = 16, family = "Times New Roman"),
+    axis.title = element_text(colour = "black", size = 22, family = "Times New Roman"), 
+    strip.text.x = element_text(size = 22, colour = "white", family = "Times New Roman"),
+    plot.title = element_text(size = 22, hjust = 0.5, family = "Times New Roman"),
+    plot.subtitle = element_text(size = 16, hjust = 0.5),
+    plot.caption = element_text(size = 14, hjust = 0),
+    panel.grid.major = element_blank(),
+    panel.grid.minor = element_blank(),
+    # axis.title.x = element_blank(),
+    axis.ticks = element_line(colour = "black", size = 0.8),
+    # panel.border = element_rect(colour = "black"),
+    # axis.ticks.x = element_blank(),
+    # legend.position = 'none'
+    # legend.key = element_rect(size = 10),
+    # legend.key.size = unit(1, 'lines')
+  )
+
+# Colors to choose from: https://sape.inf.usi.ch/quick-reference/ggplot2/colour
+
+# Colors and labels of IVs
+scale_colour_movies <- 
+  scale_colour_manual(
+    values = c("Frontline" = "palegreen4", "Halloween" = "steelblue3", 
+               "Nat Geo" = "salmon", "Parenthood" = "gold3"),
+    name = "Leader",
+    breaks=c("Frontline", "Halloween", "Nat Geo", "Parenthood"),
+    labels = c("Frontline" = "Frontline", "Halloween" = "Halloween", 
+               "Nat Geo" = "National\nGeographic", "Parenthood" = "Parenthood"))
+
+scale_x_movies <- 
+  scale_x_discrete(breaks = c("Frontline", "Halloween", "Nat Geo", "Parenthood"), 
+                   labels = c("Frontline", "Halloween", "National\nGeographic", "Parenthood"))
+
+colors_studies <- c("bisque4", "orchid3")
+
+# Means text for bar graphs
+geom_text_bar <- geom_text(aes(label = round(emmean, digits = 2), y = 1.2), size = 7, color = "black", family = "Times New Roman")
+
+# Settings for standardized graphs
+breaks_std <- c(-1, -0.5, 0, 0.5, 1)
+labels_std <- c("-1SD", "-0.5", "0", "0.5", "+1SD")
+```
+
+## Bar Plots
+
+```{r}
+# Estimate the model with fixed effects and store results in Model1
+Model1 <- lm(PositiveAffect2 ~  # Outcome
+                 Film_f + extraver, #IV
+             data = ds)
+
+# summary model with confidence intervals
+summ(Model1, confint = TRUE, ci.width = .95, digits = 3)
+
+# To get estimated means from model
+means <- emmeans(Model1, specs = "Film_f")
+means
+
+# Get all contrasts
+pairs(means, reverse = TRUE, adjust = "none")
+
+# Transform the "means" object to a dataframe
+means_graph <- as.data.frame(means)
+
+# If you would like to add the labels of the scale, you can use the code below and in the graph
+# ScaleLabels <- c("1\nNever", "2\nRarely", "3\nSometimes", "4\nOften", "5\nAlways")
+
+# Get publishable bar graphs from the model
+means_graph %>% 
+  ggplot(aes(x = Film_f, y = emmean, color = Film_f, group = Film_f)) + 
+  geom_segment(aes(x = Film_f, xend = Film_f, y = -10, yend = emmean), size = 35) +
+  geom_errorbar(aes(ymin = emmean - SE, ymax = emmean + SE), 
+                width = .3, position = position_dodge(0.1), color = "black") +
+  geom_text_bar +  
+  coord_cartesian(ylim = c(0, 29)) +
+  scale_y_continuous(breaks = c(0, 5, 10, 15, 20, 25, 29)) +
+                     # labels = ScaleLabels) +
+  labs(title = "Post Positive Affect by Movie",
+       y = "Post Positive Affect",
+       x = "Movie") +
+  theme_overall + 
+  theme_specifics +
+  guides_no +
+  scale_colour_movies + 
+  scale_x_movies
+
+# To save plots
+ggsave(file = "figures/Movies on Post Positive Affect.jpg", width = 7, height = 5, dpi = 1000)
+```
+
+## Moderation by Categorical Predictors
+
+```{r}
+# Estimate the model with fixed effects and store results in Model1
+Model1 <- lm(PositiveAffect2 ~  # Outcome
+                 Film_f * Study_f + extraver, # IVs
+             data = ds)
+
+summ(Model1, confint = TRUE, ci.width = .95, digits = 3, part.corr = TRUE, vifs = TRUE)
+
+means <- emmeans(Model1, specs = "Film_f", by = "Study_f")
+means
+
+# Get contrasts by IV2
+pairs(means, reverse = TRUE, adjust = "none")
+
+means <- emmeans(Model1, specs = "Study_f", by = "Film_f")
+means
+
+# Get contrasts by IV1
+pairs(means, reverse = TRUE, adjust = "none")
+
+# ScaleLabels <- c("1\nLowest rung", "2", "3", "4", "5", "6", "7", "8", "9", "10\nHighest rung")
+
+cat_plot(Model1, 
+         pred = Film_f, 
+         pred.labels = c("Frontline", "Halloween", "National\nGeographic", "Parenthood"),
+         modx = Study_f,
+         legend.main = "Study",
+         modx.labels = c("MAPS", "FLAT"),
+         colors = colors_studies,
+         geom = "bar",
+         interval = TRUE,
+         int.type = "confidence",
+         int.width = .95) +
+  theme_overall +
+  theme_specifics +
+  coord_cartesian(ylim = c(0, 29)) +
+  # scale_y_continuous(breaks = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10), labels = ScaleLabels) +
+  labs(title = "Post Positive Affect\nby Movie and Study", 
+       y = "Post Positive Affect",
+       x = "Movie")
+
+# To save plots
+ggsave(file = "figures/Movies and Study on Post Positive Affect.jpg", width = 7, height = 5, dpi = 1000)
+```
+
+## Moderation by Continuous Predictors
+
+```{r}
+# Estimate the model with fixed effects and store results in Model1
+Model1 <- lm(ZPositiveAffect2 ~  # Outcome
+                 Zextraver * Zneurot, # Continuous IVs
+             data = ds)
+
+summ(Model1, confint = TRUE, ci.width = .95, digits = 3, part.corr = TRUE, vifs = TRUE)
+
+# Simple slopes code
+# https://cran.r-project.org/web/packages/interactions/vignettes/interactions.html
+sim_slopes(Model1, pred = Zextraver, modx = Zneurot, johnson_neyman = FALSE, digits = 3)
+
+sim_slopes(Model1, pred = Zneurot, modx = Zextraver, johnson_neyman = FALSE, digits = 3)
+
+# Colors of slopes
+colors_neurot <- c("gold3", "salmon")
+
+interact_plot(
+  Model1, 
+  pred = Zneurot, 
+  modx = Zextraver,
+  colors = colors_neurot,
+  modx.values = "plus-minus",
+  # plot.points = TRUE,
+  interval = TRUE,
+  int.type = "confidence",
+  int.width = .95,
+  x.label = "Neuroticism",
+  y.label = "Post Positive Affect",
+  main.title = "Post Positive Affect\nby Neuroticism and Extraversion",
+  legend.main = "Extraversion") +
+  theme_overall +
+  theme_specifics +
+  theme(legend.position = c(.85, .85)) +
+  coord_cartesian(ylim = c(-1, 1), xlim = c(-1, 1)) +
+  scale_y_continuous(breaks = breaks_std, labels = labels_std) +
+  scale_x_continuous(breaks = breaks_std, labels = labels_std)
+
+# To save plots
+ggsave(file = "figures/Neuroticism and Extraversion on Post Positive Affect.jpg", width = 7, height = 5, dpi = 1000)
+```
+
+```{r}
+# Estimate the model with fixed effects and store results in Model1
+Model1 <- lm(ZPositiveAffect2 ~  # Outcome
+                 Zextraver * Zneurot + ZNegativeAffect2, # Continuous IVs
+             data = ds)
+
+summ(Model1, confint = TRUE, ci.width = .95, digits = 3, part.corr = TRUE, vifs = TRUE)
+
+# Simple slopes code
+# https://cran.r-project.org/web/packages/interactions/vignettes/interactions.html
+sim_slopes(Model1, pred = Zextraver, modx = Zneurot, johnson_neyman = FALSE, digits = 3)
+
+sim_slopes(Model1, pred = Zneurot, modx = Zextraver, johnson_neyman = FALSE, digits = 3)
+
+# Colors of slopes
+colors_neurot <- c("gold3", "salmon")
+
+interact_plot(
+  Model1, 
+  pred = Zneurot, 
+  modx = Zextraver,
+  colors = colors_neurot,
+  modx.values = "plus-minus",
+  # plot.points = TRUE,
+  interval = TRUE,
+  int.type = "confidence",
+  int.width = .95,
+  x.label = "Neuroticism",
+  y.label = "Post Positive Affect",
+  main.title = "Post Positive Affect\nby Neuroticism and Extraversion",
+  legend.main = "Extraversion") +
+  theme_overall +
+  theme_specifics +
+  theme(legend.position = c(.85, .85)) +
+  coord_cartesian(ylim = c(-1, 1), xlim = c(-1, 1)) +
+  scale_y_continuous(breaks = breaks_std, labels = labels_std) +
+  scale_x_continuous(breaks = breaks_std, labels = labels_std)
+
+# To save plots
+ggsave(file = "figures/Neuroticism and Extraversion on Post Positive Affect.jpg", width = 7, height = 5, dpi = 1000)
+```
